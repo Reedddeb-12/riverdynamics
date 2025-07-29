@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sedimentation & Erosion Hotspot Predictor</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet.js for interactive maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <style>
+        /* Custom styles for the app layout */
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+        }
+        #map {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+        }
+        .control-panel {
+            z-index: 20;
+        }
+        /* Custom scrollbar for the console */
+        #output-console::-webkit-scrollbar {
+            width: 6px;
+        }
+        #output-console::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.1);
+            border-radius: 3px;
+        }
+        #output-console::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.3);
+            border-radius: 3px;
+        }
+        /* Custom Leaflet Popup */
+        .custom-popup .leaflet-popup-content-wrapper {
+            background-color: rgba(31, 41, 55, 0.9); /* bg-gray-800 with opacity */
+            color: #f3f4f6;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(5px);
+        }
+        .custom-popup .leaflet-popup-tip {
+            background: rgba(31, 41, 55, 0.9);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100">
+
+    <!-- Map Container -->
+    <div id="map" class="bg-gray-800"></div>
+
+    <!-- Control Panel -->
+    <div class="control-panel absolute top-4 left-4 w-full max-w-sm bg-gray-900/70 backdrop-blur-md p-6 rounded-2xl shadow-2xl border border-white/10">
+        <div class="flex items-center gap-4 mb-4">
+            <div class="bg-green-500/10 p-3 rounded-xl">
+                <i class="ph-mountains ph-2x text-green-400"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold text-white">Erosion Hotspot Predictor</h1>
+                <p class="text-sm text-gray-400">LiDAR-Enhanced River Analysis</p>
+            </div>
+        </div>
+        
+        <div class="text-xs bg-black/20 p-3 rounded-lg border border-white/10 mb-5">
+             <p class="text-gray-300"><i class="ph-info text-green-400"></i> This model now incorporates simulated <strong class="text-green-400">LiDAR data</strong> like bank height and vegetation density for more accurate predictions.</p>
+        </div>
+
+
+        <!-- Input Section -->
+        <div class="space-y-5">
+            <div>
+                <label for="discharge-input" class="block text-sm font-medium text-gray-300 mb-2">Discharge Scenario (m³/s)</label>
+                <input type="number" id="discharge-input" value="300" class="w-full bg-gray-800/50 border border-white/10 rounded-lg shadow-sm py-2 px-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+            </div>
+            <div>
+                <label for="geojson-upload" class="block text-sm font-medium text-gray-300 mb-2">Upload GeoJSON Dataset</label>
+                <input type="file" id="geojson-upload" accept=".geojson,.json" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-500/10 file:text-blue-300 hover:file:bg-blue-500/20 cursor-pointer">
+            </div>
+        </div>
+
+        <!-- Action Button -->
+        <button id="run-analysis-btn" class="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-all duration-200 flex items-center justify-center gap-2 shadow-lg hover:shadow-blue-500/30">
+            <i class="ph-play-circle ph-lg"></i>
+            Run Analysis
+        </button>
+
+        <!-- Output Console -->
+        <div class="mt-6">
+            <h2 class="text-base font-semibold flex items-center gap-2"><i class="ph-terminal-window"></i>Analysis Log</h2>
+            <pre id="output-console" class="mt-2 bg-black/20 p-4 rounded-lg text-xs overflow-x-auto h-40 border border-white/10">Awaiting analysis...</pre>
+        </div>
+    </div>
+    
+    <!-- Turf.js for spatial analysis -->
+    <script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script>
+    
+    <!-- Main Application JavaScript -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const runBtn = document.getElementById('run-analysis-btn');
+            const fileInput = document.getElementById('geojson-upload');
+            const dischargeInput = document.getElementById('discharge-input');
+            const outputConsole = document.getElementById('output-console');
+
+            // --- MAP INITIALIZATION ---
+            const map = L.map('map', {
+                zoomControl: false,
+                attributionControl: false
+            }).setView([20.5937, 78.9629], 5);
+
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 20
+            }).addTo(map);
+            
+            L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+            // --- DEFAULT DATA FOR GANGA RIVER WITH SIMULATED LIDAR-DERIVED PROPERTIES ---
+            const defaultGeoJSON = {
+                "type": "FeatureCollection",
+                "features": [
+                    { 
+                        "type": "Feature", 
+                        "properties": { 
+                            "name": "Ganga: Rishikesh-Haridwar", "base_slope": 0.0025, "curvature": 1.2, "manning_n": 0.050, 
+                            "critical_shear": 4.5, "channel_width": 150, 
+                            "lidar_avg_bank_height_m": 8.0, "lidar_riparian_veg_density": 0.8 
+                        }, 
+                        "geometry": { "type": "LineString", "coordinates": [ [78.29, 30.10], [78.16, 29.94] ] } 
+                    },
+                    { 
+                        "type": "Feature", 
+                        "properties": { 
+                            "name": "Ganga: Kanpur-Prayagraj", "base_slope": 0.0001, "curvature": 1.8, "manning_n": 0.030, 
+                            "critical_shear": 2.0, "channel_width": 600,
+                            "lidar_avg_bank_height_m": 15.0, "lidar_riparian_veg_density": 0.3
+                        }, 
+                        "geometry": { "type": "LineString", "coordinates": [ [80.33, 26.45], [80.90, 26.10], [81.84, 25.43] ] } 
+                    },
+                    { 
+                        "type": "Feature", 
+                        "properties": { 
+                            "name": "Ganga: Varanasi Reach", "base_slope": 0.00008, "curvature": 1.5, "manning_n": 0.028, 
+                            "critical_shear": 1.8, "channel_width": 700,
+                            "lidar_avg_bank_height_m": 12.0, "lidar_riparian_veg_density": 0.2
+                        }, 
+                        "geometry": { "type": "LineString", "coordinates": [ [82.95, 25.33], [83.01, 25.28], [83.05, 25.32] ] } 
+                    },
+                    { 
+                        "type": "Feature", 
+                        "properties": { 
+                            "name": "Ganga: Downstream of Farakka", "base_slope": 0.00005, "curvature": 1.1, "manning_n": 0.025, 
+                            "critical_shear": 1.5, "channel_width": 1200,
+                            "lidar_avg_bank_height_m": 5.0, "lidar_riparian_veg_density": 0.6
+                        }, 
+                        "geometry": { "type": "LineString", "coordinates": [ [87.92, 24.81], [88.10, 24.60], [88.35, 24.40] ] } 
+                    }
+                ]
+            };
+            let currentGeoJSON = defaultGeoJSON;
+            let riverLayer = null;
+
+            // --- ANALYSIS LOGIC (JAVASCRIPT) ---
+            function calculateRiskProfile(discharge, geojsonData) {
+                const waterDensity = 1000;
+                const gravity = 9.81;
+                
+                const updatedFeatures = geojsonData.features.map(feature => {
+                    const props = feature.properties;
+                    // Base properties
+                    const channelWidth = props.channel_width || 200;
+                    const manningN = props.manning_n || 0.035;
+                    const baseSlope = props.base_slope || 0.0005;
+                    const criticalShear = props.critical_shear || 2.5;
+                    const curvature = props.curvature || 1.0;
+                    
+                    // LiDAR-derived properties (with defaults)
+                    const bankHeight = props.lidar_avg_bank_height_m || 10.0;
+                    const vegDensity = props.lidar_riparian_veg_density || 0.5;
+
+                    // --- Core hydraulic calculations ---
+                    const flowDepth = Math.pow((discharge * manningN) / (channelWidth * Math.sqrt(baseSlope)), 0.6);
+                    const area = channelWidth * flowDepth;
+                    const wettedPerimeter = channelWidth + 2 * flowDepth;
+                    const hydraulicRadius = area / wettedPerimeter;
+                    const velocity = (1 / manningN) * Math.pow(hydraulicRadius, 2/3) * Math.pow(baseSlope, 1/2);
+                    let shearStress = waterDensity * gravity * hydraulicRadius * baseSlope;
+                    
+                    // --- LiDAR-Enhanced Risk Index Calculation ---
+                    // 1. Adjust shear stress for curvature (more stress on bends)
+                    shearStress *= curvature;
+                    
+                    // 2. Create a vegetation resistance factor (more veg = more resistance)
+                    // This is a conceptual model: veg density of 1.0 increases critical shear by 50%
+                    const vegetationResistance = 1 + (vegDensity * 0.5); 
+                    const adjustedCriticalShear = criticalShear * vegetationResistance;
+
+                    // 3. Calculate base risk index
+                    let riskIndex = shearStress / adjustedCriticalShear;
+
+                    // 4. Factor in bank height (higher, unstable banks increase erosion risk)
+                    // Conceptual: If bank height is over 10m, slightly increase erosion risk index
+                    if (bankHeight > 10 && riskIndex > 1.0) {
+                        riskIndex *= (1 + (bankHeight - 10) / 20); // Increases index by up to 5% for a 20m bank
+                    }
+                    
+                    let riskCategory = 'Stable';
+                    if (riskIndex > 1.5) riskCategory = 'High Erosion';
+                    else if (riskIndex > 1.1) riskCategory = 'Medium Erosion';
+                    else if (riskIndex < 0.6) riskCategory = 'High Deposition';
+                    else if (riskIndex < 0.9) riskCategory = 'Medium Deposition';
+
+                    feature.properties.calculated = {
+                        riskIndex: riskIndex.toFixed(2),
+                        riskCategory: riskCategory,
+                        shearStress: shearStress.toFixed(2),
+                        velocity: velocity.toFixed(2),
+                        bankHeight: bankHeight,
+                        vegDensity: vegDensity
+                    };
+                    return feature;
+                });
+                return { ...geojsonData, features: updatedFeatures };
+            }
+
+            // --- MAP UPDATE LOGIC ---
+            function updateMap() {
+                if (riverLayer) {
+                    map.removeLayer(riverLayer);
+                }
+                const discharge = parseFloat(dischargeInput.value);
+                const riskedData = calculateRiskProfile(discharge, currentGeoJSON);
+
+                riverLayer = L.geoJSON(riskedData, {
+                    style: (feature) => {
+                        const riskIndex = feature.properties.calculated.riskIndex;
+                        let color = '#22c55e', weight = 4;
+                        if (riskIndex > 1.5) { color = '#ef4444'; weight = 7; }
+                        else if (riskIndex > 1.1) { color = '#f97316'; weight = 6; }
+                        else if (riskIndex < 0.6) { color = '#6366f1'; weight = 7; }
+                        else if (riskIndex < 0.9) { color = '#3b82f6'; weight = 6; }
+                        return { color, weight, opacity: 0.9 };
+                    },
+                    onEachFeature: (feature, layer) => {
+                        const props = feature.properties;
+                        const calc = props.calculated;
+                        const content = `
+                            <div class="space-y-2 text-sm text-white">
+                                <h4 class="font-bold text-lg text-blue-300">${props.name || 'Unnamed Segment'}</h4>
+                                <p><strong class="text-gray-400">Risk Category:</strong> ${calc.riskCategory}</p>
+                                <p><strong class="text-gray-400">Risk Index:</strong> ${calc.riskIndex}</p>
+                                <hr class="border-white/10 my-2">
+                                <p><strong class="text-gray-400">Shear Stress:</strong> ${calc.shearStress} Pa</p>
+                                <p><strong class="text-gray-400">Velocity:</strong> ${calc.velocity} m/s</p>
+                                <hr class="border-white/10 my-2">
+                                <p class="text-green-400"><i class="ph-ruler"></i> <strong class="text-gray-400">Bank Height (LiDAR):</strong> ${calc.bankHeight} m</p>
+                                <p class="text-green-400"><i class="ph-tree"></i> <strong class="text-gray-400">Veg. Density (LiDAR):</strong> ${calc.vegDensity}</p>
+                            </div>
+                        `;
+                        layer.bindPopup(content, {
+                            className: 'custom-popup'
+                        });
+                    }
+                }).addTo(map);
+
+                map.fitBounds(riverLayer.getBounds().pad(0.1));
+                updateConsole(riskedData);
+            }
+            
+            function updateConsole(data) {
+                let logText = "--- Analysis Results ---\n\n";
+                data.features.forEach(f => {
+                    logText += `Segment: ${f.properties.name || 'Unnamed'}\n`;
+                    logText += `Risk: ${f.properties.calculated.riskCategory} (Index: ${f.properties.calculated.riskIndex})\n\n`;
+                });
+                outputConsole.textContent = logText;
+            }
+
+            // --- EVENT LISTENERS ---
+            runBtn.addEventListener('click', updateMap);
+
+            fileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = JSON.parse(e.target.result);
+                        if (data.type === "FeatureCollection" && Array.isArray(data.features)) {
+                            currentGeoJSON = data;
+                            outputConsole.textContent = `File "${file.name}" loaded. Running analysis...`;
+                            updateMap();
+                        } else {
+                            throw new Error("Invalid GeoJSON format. Must be a FeatureCollection or missing required LiDAR properties.");
+                        }
+                    } catch (error) {
+                        outputConsole.textContent = `Error: Could not parse file. Ensure it's valid GeoJSON.\n${error.message}`;
+                    }
+                };
+                reader.readAsText(file);
+            });
+
+            // --- INITIAL RUN ---
+            updateMap();
+            outputConsole.textContent = "Default data loaded. Analysis complete.";
+        });
+    </script>
+</body>
+</html>
